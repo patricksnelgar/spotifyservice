@@ -1,0 +1,23 @@
+{
+  "name": "spotify-local-service",
+  "version": "0.0.1",
+  "description": "locally hosted web service for accessing Spotify API queries",
+  "main": "service.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/patricksnelgar/spotifyservice.git"
+  },
+  "author": "Patrick Snelgar",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/patricksnelgar/spotifyservice/issues"
+  },
+  "homepage": "https://github.com/patricksnelgar/spotifyservice#readme",
+  "dependencies": {
+    "opn": "^5.2.0",
+    "url": "^0.11.0"
+  }
+}

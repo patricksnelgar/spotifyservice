@@ -1,57 +1,43 @@
-/* response for current song.
-
-item {
-    Album{
-        Artists{
-            #Can probably be multiple?
-            0{
-                name:
-            }
-        }
-        Images{
-            #0 is the largest
-            0{
-                height:
-                url:
-                width:
-            }
-            1{}
-            2{}
-            #ablum name
-            name:
-        }
-    }
-    Artists{
-        #Can probably be multiple?
-        0{
-            name:
-        }
-    }
-
-    #song name
-    name:
-}
-*/
-
-
-
-const http  = require('http');
+const opn = require('opn');
+const http = require('http');
 const https = require('https');
-var querystring = require('querystring');
+const querystring = require('querystring');
+const url = require('url');
+const fs = require('fs');
 
+const authorizationCodeURL = 'https://accounts.spotify.com/authorize?client_id=aaac59d05bb04b9098978499f3de06cf&response_type=code&scope=user-read-private%20user-read-currently-playing%20user-modify-playback-state%20user-read-playback-state&redirect_uri=http://localhost&state=756'
 var authCode = null;
-var accessCode = null;
+
+var accessToken = null;
 var refreshToken = null;
+var tokenType = null;
+var tokenTimeout = null;
 
+var nowPlaying = null;
 
-// Gets access + refresh token from code
-var postData = querystring.stringify({
+var state = null;
+
+// ############################# Read saved state ###############################
+fs.readFile('state.dat',null, (e, data) => {
+    if(e) throw e;
+    state = JSON.parse(data);
+    if(state != null){
+        authCode = state['authorization_code'];
+        console.log(authCode);
+        accessToken = state['access_token'];
+        refreshToken = state['refresh_token'];
+        tokenType = state['token_type'];
+    }
+});
+
+// Gets access + refresh token from authorization code
+var postData = {
     'grant_type':'authorization_code',
     'code': authCode,
     'redirect_uri':'http://localhost',
     'client_id':'aaac59d05bb04b9098978499f3de06cf',
     'client_secret':'826d9d774b654fabb11585bff03427b1'
-});
+};
 
 var optionsAccessToken = {
     host: 'accounts.spotify.com',
@@ -60,42 +46,118 @@ var optionsAccessToken = {
     method:'POST',
     headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(postData),        
+        'Content-Length': Buffer.byteLength(querystring.stringify(postData)),        
     }
 };
 
+function getAccessToken(callback) {
+    var accessTokenRequest = https.request(optionsAccessToken, (authCallback) => {
+        console.log('Status: ', authCallback.statusCode);
+        var body = [];
+        authCallback.on('data', (data) => { body.push(data); });
+        authCallback.on('end', () => {
+            var message = Buffer.concat(body);
+            var details = JSON.parse(message);
+            console.log('Access code return: ', message.toString());
 
-// Uses access code to query API for current song
-var queryNowPlaying = {
-    host: 'api.spotify.com',
-    port: 443,
-    path: '/v1/me/player',
-    headers: {
-        'Authorization' : 'Bearer ' + accessCode
-    }
+            if(authCallback.statusCode == 400){
+                var errorDescription = details['error_description'];
+                console.log('Could not get Tokens: ', errorDescription);
+                if(errorDescription == 'Authorization code expired'){
+                    // Need to request new auth code
+                    opn(authorizationCodeURL);
+                }
+                return callback('error 400');
+            }
+
+            if(message.byteLength != 0){
+                
+                accessToken  = details['access_token'];
+                refreshToken = details['refresh_token'];
+                tokenType    = details['token_type'];
+                tokenTimeout = details['expires_in'];
+
+                console.log('access token: ', accessToken);
+                console.log('refresh token: ', refreshToken);
+                console.log('token type: ', tokenType);
+                console.log('expires in: ', tokenTimeout);
+
+                state['access_token'] = accessToken;
+                state['refresh_token'] = refreshToken;
+                state['token_type'] = tokenType;
+                
+                fs.writeFile('state.dat', state);
+
+                return callback('done');
+            }
+
+            return callback('no data');
+            
+        });
+
+        authCallback.on('error', (error) => {
+            console.log('ERROR: ', error.message);
+        });        
+    });
+    
+    accessTokenRequest.write(
+        querystring.stringify(postData));
+    accessTokenRequest.end();
+
+    accessTokenRequest.on('error', (error) => {
+        console.log('Error: ', error.message);
+        return callback('error ' + error.message);
+    });
+
+    
 }
 
-
-function getNowPlaying(){
+function getNowPlaying(callback){
     // try request the current song
-    var req = https.request(queryNowPlaying, (res) => {
-        console.log('STATUS: ' + res.statusCode);
-        if(res.statusCode == 402){
-
+    var req = https.request({
+        host: 'api.spotify.com',
+        port: 443,
+        path: '/v1/me/player',
+        headers: {
+            'Authorization' : 'Bearer ' + accessToken
         }
+    }, (res) => {
+        console.log('STATUS: ' + res.statusCode);
         //console.log('HEADERS:' +JSON.stringify(res.headers));
 
         var body = [];
+
         res.on('data', function(part) {
             body.push(part);
-        }).on('end', function() {
+        });
+        
+        res.on('end', function() {
             var message = Buffer.concat(body);
-            console.log('BODY: ' + message);
-            return message;
+            nowPlaying = JSON.parse(message);
+            //console.log('BODY: ' + message);
+
+            switch(res.statusCode){
+                // Check case of no players available
+                case 200:
+                    if(message.byteLength == 0){
+                        console.log('200: empty body');
+                    }
+                    break;
+                case 202:
+                    console.log('response size: ', message.byteLength);
+                case 401:
+                    console.log(nowPlaying['error']['message']);
+                    break;
+                case 402:
+                    console.log(nowPlaying['error']['message']);
+                    break;
+            }
+            
+            return callback(nowPlaying);
         })
     });
     
-    req.write(postData);
+    //req.write(postData);
     req.end();
 
 
@@ -103,25 +165,62 @@ function getNowPlaying(){
         console.log('ERROR: ' + e.message);
     });
 }
+
+// ################################## Server ####################################
 const server = http.createServer(function(req,response){
     console.log(req.url);
     response.writeHead(200, { 'Content-Type': 'text/plain' });
     switch(req.url){
-        case '/authCode':
+        case '/authCode':            
             response.end(authCode);
             break;
         case '/accessCode':
-            response.end(accessCode);
+            if(accessToken == null){
+                getAccessToken((token) => {
+                    console.log(token);
+                    response.end(token);
+                });
+            } else
+                response.end(accessToken);
             break;
         case '/refreshToken':
             response.end(refreshToken);
             break;
         case '/nowPlaying':
-            response.end(getNowPlaying());
-        default:
-            response.end("hullo there");
+            getNowPlaying((song) => {
+                console.log("now playing: ", song);
+                var item = song['item'];
+                if(item != null){
+                    var album = item['album'];
+                    var artists = item['artists'];
+
+                    var smallSongInfo = {
+                        'progress'      : song['progress_ms'],
+                        'duration'      : item['duration_ms'],
+                        'song_title'    : item['name'],
+                        'artist'        : artists['0']['name'],
+                        'album'         : album['name'],
+                        'album_art'     : album['images']['0']['url']
+                    };
+                    
+                    response.end(JSON.stringify(smallSongInfo));
+                } else {
+                    response.end();
+                }
+            });
+            break;       
     }
-    
+
+    if(req.url.startsWith('/?')){
+        console.log('New Authorization code requested');
+        var q = url.parse(req.url, true).query;
+        //console.log('Code: ', q.code);
+        authCode = q.code;
+        postData.code = authCode;
+        state['authorization_code'] = authCode;
+        fs.writeFile('state.dat', state);
+        response.end();
+    }    
     
 }).listen(80);
 
