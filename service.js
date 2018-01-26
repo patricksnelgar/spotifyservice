@@ -5,6 +5,8 @@ const querystring = require('querystring');
 const url = require('url');
 const fs = require('fs');
 
+const client_id = 'aaac59d05bb04b9098978499f3de06cf';
+const client_secret = '826d9d774b654fabb11585bff03427b1';
 const authorizationCodeURL = 'https://accounts.spotify.com/authorize?client_id=aaac59d05bb04b9098978499f3de06cf&response_type=code&scope=user-read-private%20user-read-currently-playing%20user-modify-playback-state%20user-read-playback-state&redirect_uri=http://localhost&state=756'
 var authCode = null;
 
@@ -25,8 +27,8 @@ var postData = {
     'grant_type':'authorization_code',
     'code': null,
     'redirect_uri':'http://localhost',
-    'client_id':'aaac59d05bb04b9098978499f3de06cf',
-    'client_secret':'826d9d774b654fabb11585bff03427b1'
+    'client_id': client_id,
+    'client_secret': client_secret
 };
 
 var optionsAccessToken = {
@@ -45,7 +47,7 @@ fs.readFile('state.dat',null, (e, data) => {
     state = JSON.parse(data);
     if(state != null){
         authCode = state['authorization_code'];
-        console.log(authCode);
+        //console.log(authCode);
         accessToken = state['access_token'];
         refreshToken = state['refresh_token'];
         tokenType = state['token_type'];
@@ -54,6 +56,48 @@ fs.readFile('state.dat',null, (e, data) => {
         optionsAccessToken.headers['Content-Length'] = Buffer.byteLength(querystring.stringify(postData));
     }
 });
+
+function requestNewAccessToken(callback){
+    bodyData = {
+        'grant_type' : 'refresh_token',
+        'refresh_token' : refreshToken
+    };
+
+    var req = https.request({
+        host: 'accounts.spotify.com',
+        port: 443,
+        method: 'POST',
+        path: '/api/token',
+        headers: {
+            'Authorization' : 'Basic ' + (Buffer(client_id +":" +client_secret)).toString('base64'),
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': Buffer.byteLength(querystring.stringify(postData))   
+        }
+    }, (result) => {
+
+        var message = [];
+        result.on('data', (data) => { message.push(data); });
+        result.on('end', () => {
+            var body = Buffer.concat(message);
+            console.log('result: ' + body);
+            var parsed = JSON.parse(body);
+            state['access_token'] = parsed['access_token'];
+            accessToken = state['access_token'];
+            console.log("State: ", JSON.stringify(state));
+            fs.writeFile('state.dat', JSON.stringify(state));
+            return callback('done');
+        })
+
+        
+    });
+
+    req.write(querystring.stringify(postData));
+    req.end();
+
+    req.on('error', (e) => {
+        console.log('Error: ', e.message);
+    });
+}
 
 function getAccessToken(callback) {
     var accessTokenRequest = https.request(optionsAccessToken, (authCallback) => {
@@ -73,6 +117,16 @@ function getAccessToken(callback) {
                     opn(authorizationCodeURL);
                 }
                 return callback('error 400');
+            }
+
+            if(authCallback.statusCode == 401){
+                var errorDescription = details['error']['message'];
+                console.log('message: ', errorDescription);
+                if(errorDescription == 'Invalid access token'){
+                    requestNewAccessToken((token) => {
+                        console.log('refreshed access token');
+                    })
+                }
             }
 
             if(message.byteLength != 0){
@@ -113,8 +167,7 @@ function getAccessToken(callback) {
         console.log('Error: ', error.message);
         return callback('error ' + error.message);
     });
-
-    
+   
 }
 
 function getNowPlaying(callback){
@@ -152,7 +205,14 @@ function getNowPlaying(callback){
                     case 202:
                         console.log('response size: ', message.byteLength);
                     case 401:
-                        console.log(nowPlaying['error']['message']);
+                        var message = nowPlaying['error']['message']
+                        console.log(message);
+                        if(message == 'The access token expired' || message == 'Invalid access token'){
+                            // Get new access token using refresh token
+                            requestNewAccessToken( (query) => {
+                                console.log('new token: ', query);
+                            });
+                        }
                         break;
                     case 402:
                         console.log(nowPlaying['error']['message']);
@@ -194,6 +254,12 @@ const server = http.createServer(function(req,response){
                 response.end(accessToken);
             break;
         case '/refreshToken':
+            
+
+            requestNewAccessToken((ret) => {
+                console.log("new access token aquired");
+
+            });
             response.end(refreshToken);
             break;
         case '/nowPlaying':
@@ -235,3 +301,7 @@ const server = http.createServer(function(req,response){
 }).listen(80);
 
 server.on('error', (e) => console.log('Error: ', e.message));
+
+
+//console.log('String: ', client_id);
+//console.log('Auth String: ', 'Authorization: Basic ' + (Buffer(client_id)).toString('base64') + ':' + (Buffer(client_secret)).toString('base64'));
