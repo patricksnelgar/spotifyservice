@@ -18,22 +18,12 @@ var nowPlaying = null;
 var state = null;
 
 // ############################# Read saved state ###############################
-fs.readFile('state.dat',null, (e, data) => {
-    if(e) throw e;
-    state = JSON.parse(data);
-    if(state != null){
-        authCode = state['authorization_code'];
-        console.log(authCode);
-        accessToken = state['access_token'];
-        refreshToken = state['refresh_token'];
-        tokenType = state['token_type'];
-    }
-});
+
 
 // Gets access + refresh token from authorization code
 var postData = {
     'grant_type':'authorization_code',
-    'code': authCode,
+    'code': null,
     'redirect_uri':'http://localhost',
     'client_id':'aaac59d05bb04b9098978499f3de06cf',
     'client_secret':'826d9d774b654fabb11585bff03427b1'
@@ -46,9 +36,24 @@ var optionsAccessToken = {
     method:'POST',
     headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': Buffer.byteLength(querystring.stringify(postData)),        
+        'Content-Length': 0,        
     }
 };
+
+fs.readFile('state.dat',null, (e, data) => {
+    if(e) throw e;
+    state = JSON.parse(data);
+    if(state != null){
+        authCode = state['authorization_code'];
+        console.log(authCode);
+        accessToken = state['access_token'];
+        refreshToken = state['refresh_token'];
+        tokenType = state['token_type'];
+
+        postData.code = authCode;
+        optionsAccessToken.headers['Content-Length'] = Buffer.byteLength(querystring.stringify(postData));
+    }
+});
 
 function getAccessToken(callback) {
     var accessTokenRequest = https.request(optionsAccessToken, (authCallback) => {
@@ -86,7 +91,7 @@ function getAccessToken(callback) {
                 state['refresh_token'] = refreshToken;
                 state['token_type'] = tokenType;
                 
-                fs.writeFile('state.dat', state);
+                fs.writeFile('state.dat', JSON.stringify(state));
 
                 return callback('done');
             }
@@ -133,27 +138,32 @@ function getNowPlaying(callback){
         
         res.on('end', function() {
             var message = Buffer.concat(body);
-            nowPlaying = JSON.parse(message);
-            //console.log('BODY: ' + message);
-
-            switch(res.statusCode){
-                // Check case of no players available
-                case 200:
-                    if(message.byteLength == 0){
-                        console.log('200: empty body');
-                    }
-                    break;
-                case 202:
-                    console.log('response size: ', message.byteLength);
-                case 401:
-                    console.log(nowPlaying['error']['message']);
-                    break;
-                case 402:
-                    console.log(nowPlaying['error']['message']);
-                    break;
-            }
             
-            return callback(nowPlaying);
+            console.log('BODY: ' + message);
+            if(message.byteLength > 0){
+                nowPlaying = JSON.parse(message);
+                switch(res.statusCode){
+                    // Check case of no players available
+                    case 200:
+                        if(message.byteLength == 0){
+                            console.log('200: empty body');
+                        }
+                        break;
+                    case 202:
+                        console.log('response size: ', message.byteLength);
+                    case 401:
+                        console.log(nowPlaying['error']['message']);
+                        break;
+                    case 402:
+                        console.log(nowPlaying['error']['message']);
+                        break;
+                }
+                
+                return callback(nowPlaying);
+            } else {
+                console.log('empty response');
+                return callback('empty response == no device?');
+            }   
         })
     });
     
@@ -205,7 +215,7 @@ const server = http.createServer(function(req,response){
                     
                     response.end(JSON.stringify(smallSongInfo));
                 } else {
-                    response.end();
+                    response.end("No connected device");
                 }
             });
             break;       
@@ -218,7 +228,7 @@ const server = http.createServer(function(req,response){
         authCode = q.code;
         postData.code = authCode;
         state['authorization_code'] = authCode;
-        fs.writeFile('state.dat', state);
+        fs.writeFile('state.dat', JSON.stringify(state));
         response.end();
     }    
     
