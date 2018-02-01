@@ -1,9 +1,13 @@
+
+const timers = require('timers');
 const opn = require('opn');
 const http = require('http');
 const https = require('https');
 const querystring = require('querystring');
 const url = require('url');
 const fs = require('fs');
+const util = require('util');
+const setTimeoutPromise = util.promisify(timers.setInterval);
 
 const client_id = 'aaac59d05bb04b9098978499f3de06cf';
 const client_secret = '826d9d774b654fabb11585bff03427b1';
@@ -13,34 +17,13 @@ var authCode = null;
 var accessToken = null;
 var refreshToken = null;
 var tokenType = null;
-var tokenTimeout = null;
+var tokenTimeout = 3600;
 
 var nowPlaying = null;
 
 var state = null;
 
 // ############################# Read saved state ###############################
-
-
-// Gets access + refresh token from authorization code
-var postData = {
-    'grant_type':'authorization_code',
-    'code': null,
-    'redirect_uri':'http://localhost',
-    'client_id': client_id,
-    'client_secret': client_secret
-};
-
-var optionsAccessToken = {
-    host: 'accounts.spotify.com',
-    port: 443,
-    path:'/api/token',
-    method:'POST',
-    headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Content-Length': 0,        
-    }
-};
 
 fs.readFile('state.dat',null, (e, data) => {
     if(e) throw e;
@@ -51,9 +34,6 @@ fs.readFile('state.dat',null, (e, data) => {
         accessToken = state['access_token'];
         refreshToken = state['refresh_token'];
         tokenType = state['token_type'];
-
-        postData.code = authCode;
-        optionsAccessToken.headers['Content-Length'] = Buffer.byteLength(querystring.stringify(postData));
     }
 });
 
@@ -71,7 +51,7 @@ function requestNewAccessToken(callback){
         headers: {
             'Authorization' : 'Basic ' + (Buffer(client_id +":" +client_secret)).toString('base64'),
             'Content-Type': 'application/x-www-form-urlencoded',
-            'Content-Length': Buffer.byteLength(querystring.stringify(postData))   
+            'Content-Length': Buffer.byteLength(querystring.stringify(bodyData))   
         }
     }, (result) => {
 
@@ -81,25 +61,51 @@ function requestNewAccessToken(callback){
             var body = Buffer.concat(message);
             console.log('result: ' + body);
             var parsed = JSON.parse(body);
-            state['access_token'] = parsed['access_token'];
-            accessToken = state['access_token'];
-            console.log("State: ", JSON.stringify(state));
-            fs.writeFile('state.dat', JSON.stringify(state));
-            return callback('done');
+            if(parsed['error'] != null){
+                return callback(parsed['error']['error_message']);
+            } else {
+                state['access_token'] = parsed['access_token'];
+                accessToken = state['access_token'];
+                console.log("State: ", JSON.stringify(state));
+                fs.writeFile('state.dat', JSON.stringify(state));
+                return callback('Access token aquired');
+            }
         })
 
         
     });
 
-    req.write(querystring.stringify(postData));
+    req.write(querystring.stringify(bodyData));
     req.end();
 
     req.on('error', (e) => {
         console.log('Error: ', e.message);
+        return callback(e.message)
     });
 }
 
 function getAccessToken(callback) {
+
+    // Gets access + refresh token from authorization code
+    var postData = querystring.stringify({
+        'grant_type':'authorization_code',
+        'code': authCode,
+        'redirect_uri':'http://localhost',
+        'client_id': client_id,
+        'client_secret': client_secret
+    });
+
+    var optionsAccessToken = {
+        host: 'accounts.spotify.com',
+        port: 443,
+        path:'/api/token',
+        method:'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Content-Length': Buffer.byteLength(postData),        
+        }
+    };
+
     var accessTokenRequest = https.request(optionsAccessToken, (authCallback) => {
         console.log('Status: ', authCallback.statusCode);
         var body = [];
@@ -114,9 +120,9 @@ function getAccessToken(callback) {
                 console.log('Could not get Tokens: ', errorDescription);
                 if(errorDescription == 'Authorization code expired'){
                     // Need to request new auth code
-                    opn(authorizationCodeURL);
+                    //opn(authorizationCodeURL);
                 }
-                return callback('error 400');
+                return callback(errorDescription);
             }
 
             if(authCallback.statusCode == 401){
@@ -233,6 +239,35 @@ function getNowPlaying(callback){
 
     req.on('error', function(e) {
         console.log('ERROR: ' + e.message);
+        return callback(e.message);
+    });
+}
+
+function testConnection(callback) {
+    // make a 
+    var options = {
+        host: 'api.spotify.com',
+        port: 443,
+        path: '/v1/me',
+        method: 'GET',
+        headers: {
+            'Authorization' : '' + tokenType + ' ' + accessToken
+        }
+    }
+    var testRequest = https.request(options, (response) => {
+        var _data = [];
+        response.on('data', (data) => { _data.push(data); });
+        response.on('end', () => {
+            console.log('TEST DATA: ', Buffer.concat(_data).toString());
+            return callback(JSON.parse(Buffer.concat(_data).toString()));
+        })
+    });
+
+    testRequest.end();
+
+    testRequest.on('error', (e) => {
+        console.log('TEST ERROR: ', e.message);
+        return callback(e.message);
     });
 }
 
@@ -264,7 +299,7 @@ const server = http.createServer(function(req,response){
             break;
         case '/nowPlaying':
             getNowPlaying((song) => {
-                console.log("now playing: ", song);
+                console.log("'now playing' response: ", song);
                 var item = song['item'];
                 if(item != null){
                     var album = item['album'];
@@ -281,26 +316,58 @@ const server = http.createServer(function(req,response){
                     
                     response.end(JSON.stringify(smallSongInfo));
                 } else {
-                    response.end("No connected device");
+                    response.end(song.toString());
                 }
             });
-            break;       
+            break; 
+        case '/testConnection':
+        var error = false;
+
+            testConnection((result) => {
+                error = result['error'] != null
+                console.log('ERROR?= ', error);
+                if(error){
+                    if(result['error']['message'] == 'Invalid access token'){
+                        requestNewAccessToken((resultAccess) => {
+                            console.log('TEST - New Access token: ', resultAccess);
+                            if(resultAccess['error']['message'] == 'Authorization code expired'){
+                                //opn(authorizationCodeURL);
+                                response.end();
+                            }
+                        })
+                    }
+                } else {
+                    response.end(JSON.stringify(result));
+                }
+            }) ;
+            break;    
     }
 
+    /*
     if(req.url.startsWith('/?')){
-        console.log('New Authorization code requested');
+        console.log('New Authorization aquired');
         var q = url.parse(req.url, true).query;
         //console.log('Code: ', q.code);
         authCode = q.code;
         postData.code = authCode;
+        optionsAccessToken.headers['Content-Length'] = Buffer.byteLength(querystring.stringify(postData));
         state['authorization_code'] = authCode;
         fs.writeFile('state.dat', JSON.stringify(state));
         response.end();
-    }    
+    }
+    */    
     
 }).listen(80);
 
 server.on('error', (e) => console.log('Error: ', e.message));
+
+function timeoutCallback(){
+    requestNewAccessToken((result) => {
+        console.log('Automated token refresh: ', result);
+    });
+}
+setTimeoutPromise(timeoutCallback, tokenTimeout * 1000);
+
 
 
 //console.log('String: ', client_id);
